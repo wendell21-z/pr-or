@@ -137,9 +137,38 @@ async def start_solve(solve_dto: SolveDto):
                 "status": "COMPLETED",
                 "score": solver.ObjectiveValue()
             }
+
+            # Persist active tasks into relational task table via storage.pinned_tasks
+            pinned = []
+            for t in result_tasks:
+                # find die db id by code if possible
+                die_code = t.get("dieCode")
+                die_db_id = None
+                for k, v in db.dies.items():
+                    if v.get("code") == die_code:
+                        die_db_id = k
+                        break
+
+                task_id = db.get_next_id("task")
+                pinned.append({
+                    "taskId": task_id,
+                    "day": t.get("day"),
+                    "dieId": die_db_id,
+                    "seqInDay": t.get("seqInDay"),
+                    "quantity": t.get("hits"),
+                    "pinnedType": None,
+                    "memo": None,
+                    "priority": None,
+                })
+
+            # replace pinned tasks with these results (overwrite)
+            db.pinned_tasks = pinned
+
             with db.session_scope() as s:
                 db.save(s)
-            return {"message": f"Solver finished for line {solve_dto.lineId}", "status": "COMPLETED"}
+
+            # return results to frontend
+            return {"message": f"Solver finished for line {solve_dto.lineId}", "status": "COMPLETED", "results": result_tasks}
         else:
             # 诊断不可行原因（如果尚未计算）
             if not reasons:
@@ -201,12 +230,38 @@ async def start_solve(solve_dto: SolveDto):
 
                 db.solve_results[solve_dto.lineId] = result_tasks
                 db.solve_status[solve_dto.lineId] = {"status": "PARTIAL", "reasons": reasons}
+
+                # Persist partial active tasks into relational task table via storage.pinned_tasks
+                pinned = []
+                for t in result_tasks:
+                    die_code = t.get("dieCode")
+                    die_db_id = None
+                    for k, v in db.dies.items():
+                        if v.get("code") == die_code:
+                            die_db_id = k
+                            break
+
+                    task_id = db.get_next_id("task")
+                    pinned.append({
+                        "taskId": task_id,
+                        "day": t.get("day"),
+                        "dieId": die_db_id,
+                        "seqInDay": t.get("seqInDay"),
+                        "quantity": t.get("hits"),
+                        "pinnedType": None,
+                        "memo": None,
+                        "priority": None,
+                    })
+
+                db.pinned_tasks = pinned
+
                 with db.session_scope() as s:
                     db.save(s)
                 return {
                     "message": f"Solver failed; generated partial fallback schedule for line {solve_dto.lineId}",
                     "status": "PARTIAL",
                     "reasons": reasons,
+                    "results": result_tasks,
                 }
 
             # 如果回退也没有任何结果，则按原有逻辑返回失败
