@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip3 install *)",
+      "Read(//Users/Wendell/Development/fawvw/pr-o/**)",
+      "Bash(sleep *)",
+      "Bash(curl *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(lsof *)",
+      "Bash(xargs *)",
+      "Bash(mkdir *)"
+    ]
+  },
+  "$version": 3
+}
