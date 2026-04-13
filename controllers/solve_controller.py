@@ -141,6 +141,75 @@ async def start_solve(solve_dto: SolveDto):
                 db.save(s)
             return {"message": f"Solver finished for line {solve_dto.lineId}", "status": "COMPLETED"}
         else:
+            # 诊断不可行原因（如果尚未计算）
+            if not reasons:
+                reasons = scheduler.diagnose_infeasibility(solver)
+
+            # 尝试生成降级的回退排产（贪心分配，尽量满足需求）。
+            result_tasks = []
+            remaining = {k: v.demand for k, v in data.part_demand_map.items()}
+
+            def sorted_days():
+                return sorted(data.day_map.keys(), key=lambda d: [int(x) for x in d.split('-')])
+
+            for day_id in sorted_days():
+                day = data.day_map[day_id]
+                work_sec = (day.working_time - day.out_minutes) * 60
+
+                for die_id, die in data.die_map.items():
+                    # 可生产的零件
+                    capable_parts = [p for (d, p) in data.die_part_map.keys() if d == die_id]
+                    if not capable_parts:
+                        continue
+
+                    max_hits = work_sec // die.production_time if die.production_time > 0 else 0
+                    assigned_qty = 0
+                    assigned_part = None
+
+                    for part_id in capable_parts:
+                        dem = remaining.get((day_id, part_id), 0)
+                        if dem <= 0:
+                            continue
+                        take = min(dem, max_hits)
+                        # 必须满足最小批次，否则跳过
+                        if take >= die.min_batch:
+                            assigned_qty = take
+                            assigned_part = part_id
+                            remaining[(day_id, part_id)] = dem - take
+                            break
+
+                    if assigned_qty > 0 and assigned_part is not None:
+                        result_tasks.append({
+                            "day": date.fromisoformat(day_id),
+                            "dieCode": die_id,
+                            "hits": assigned_qty,
+                            "lineId": solve_dto.lineId,
+                            "startTime": 0,
+                        })
+
+            if result_tasks:
+                # 排序并设置顺序字段
+                result_tasks.sort(key=lambda x: (x["day"], x["startTime"]))
+                last_day = None
+                seq = 1
+                for t in result_tasks:
+                    if t["day"] != last_day:
+                        seq = 1
+                        last_day = t["day"]
+                    t["seqInDay"] = seq
+                    seq += 1
+
+                db.solve_results[solve_dto.lineId] = result_tasks
+                db.solve_status[solve_dto.lineId] = {"status": "PARTIAL", "reasons": reasons}
+                with db.session_scope() as s:
+                    db.save(s)
+                return {
+                    "message": f"Solver failed; generated partial fallback schedule for line {solve_dto.lineId}",
+                    "status": "PARTIAL",
+                    "reasons": reasons,
+                }
+
+            # 如果回退也没有任何结果，则按原有逻辑返回失败
             db.solve_status[solve_dto.lineId] = {"status": "FAILED", "reasons": reasons}
             with db.session_scope() as s:
                 db.save(s)
