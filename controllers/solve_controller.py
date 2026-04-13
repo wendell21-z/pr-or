@@ -102,40 +102,15 @@ async def start_solve(solve_dto: SolveDto):
     try:
         data = get_schedule_data(solve_dto.lineId, solve_dto.begin)
         scheduler = PunchingScheduler(data)
-        solver, status, reasons = scheduler.solve(log_search=False)
+        try:
+            # New behavior: scheduler.solve() returns active task list or raises on infeasible
+            result_tasks = scheduler.solve(log_search=False)
 
-        from ortools.sat.python import cp_model
-        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
-            # 从 tasks 中提取结果
-            result_tasks = []
-            for task in data.tasks:
-                qty = solver.Value(task.quantity)
-                if qty > 0:
-                    start_time = solver.Value(task.start)
-                    result_tasks.append({
-                        "day": date.fromisoformat(task.day_id),
-                        "dieCode": task.die_id,
-                        "hits": qty,
-                        "lineId": solve_dto.lineId,
-                        "startTime": start_time,
-                    })
-
-            result_tasks.sort(key=lambda x: (x["day"], x["startTime"]))
-
-            # 添加 seqInDay 字段
-            last_day = None
-            seq = 1
-            for t in result_tasks:
-                if t["day"] != last_day:
-                    seq = 1
-                    last_day = t["day"]
-                t["seqInDay"] = seq
-                seq += 1
-
+            # persist results and status
             db.solve_results[solve_dto.lineId] = result_tasks
             db.solve_status[solve_dto.lineId] = {
                 "status": "COMPLETED",
-                "score": solver.ObjectiveValue()
+                "score": scheduler.last_score,
             }
 
             # Persist active tasks into relational task table via storage.pinned_tasks
@@ -161,7 +136,6 @@ async def start_solve(solve_dto: SolveDto):
                     "priority": None,
                 })
 
-            # replace pinned tasks with these results (overwrite)
             db.pinned_tasks = pinned
 
             with db.session_scope() as s:
@@ -169,11 +143,11 @@ async def start_solve(solve_dto: SolveDto):
 
             # return results to frontend
             return {"message": f"Solver finished for line {solve_dto.lineId}", "status": "COMPLETED", "results": result_tasks}
-        else:
-            # 诊断不可行原因（如果尚未计算）
-            if not reasons:
-                reasons = scheduler.diagnose_infeasibility(solver)
+        except Exception as e:
+            # If scheduler raised SolveInfeasibleError (or other), try to extract reasons
+            reasons = getattr(e, 'reasons', None) or [str(e)]
 
+            # 诊断不可行原因已在 exception.reasons 中，如果没有，再执行诊断
             # 尝试生成降级的回退排产（贪心分配，尽量满足需求）。
             result_tasks = []
             remaining = {k: v.demand for k, v in data.part_demand_map.items()}

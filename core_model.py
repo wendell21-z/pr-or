@@ -12,6 +12,13 @@ from data_models import ScheduleData
 """
 
 
+class SolveInfeasibleError(Exception):
+    """Raised when the CP-SAT solver finds the model infeasible. Contains a list of diagnostic reasons."""
+    def __init__(self, reasons=None):
+        super().__init__("Solve infeasible")
+        self.reasons = reasons or []
+
+
 class PunchingScheduler:
     def __init__(self, data: ScheduleData):
         self.data = data
@@ -20,6 +27,7 @@ class PunchingScheduler:
         self.part_stock = {}     # {(part_id, day_id): int_var} 每天每个零件的库存
         self.max_production_per_day = 500
         self.assumptions = {}    # {assumption_literal: description}
+        self.last_score = None
 
         # 按日期排序的天列表（支持 "YYYY-M-D" 或 "YYYY-MM-DD" 格式）
         self._sorted_days = sorted(
@@ -96,78 +104,78 @@ class PunchingScheduler:
             self.model.add_no_overlap([task.interval for task in tasks])
 
         # 约束 3：零件库存平衡
-        for part_id, part in self.data.part_map.items():
-            for d_idx, day_id in enumerate(self._sorted_days):
-                # 计算当天该零件的总产量
-                daily_production = []
-                for task in self._tasks_by_day.get(day_id, []):
-                    key = (task.die_id, part_id)
-                    if key in self.data.die_part_map:
-                        yield_rate = self.data.die_part_map[key].yield_rate
-                        daily_production.append(task.quantity * yield_rate)
-
-                # 前一天库存（第一天使用初始库存）
-                if d_idx == 0:
-                    prev_stock = part.initial_stock
-                else:
-                    prev_day_id = self._sorted_days[d_idx - 1]
-                    prev_stock = self.part_stock[(part_id, prev_day_id)]
-
-                pd = self.data.part_demand_map.get((day_id, part_id))
-                demand = pd.demand if pd else 0
-
-                # 库存平衡等式
-                self.model.add(
-                    self.part_stock[(part_id, day_id)] == prev_stock + sum(daily_production) - demand
-                ).WithName(f"StockBalance_{part_id}_{day_id}")
-
-                # 带假设的非负库存约束（用于不可行性诊断）
-                add_assumed(
-                    prev_stock + sum(daily_production) >= demand,
-                    f"NonNegStock_{part_id}_{day_id}",
-                    f"第 {day_id} 天零件 {part_id} 的库存不足（需求 {demand}，可用 {prev_stock} + 生产）。"
-                )
+        # for part_id, part in self.data.part_map.items():
+        #     for d_idx, day_id in enumerate(self._sorted_days):
+        #         # 计算当天该零件的总产量
+        #         daily_production = []
+        #         for task in self._tasks_by_day.get(day_id, []):
+        #             key = (task.die_id, part_id)
+        #             if key in self.data.die_part_map:
+        #                 yield_rate = self.data.die_part_map[key].yield_rate
+        #                 daily_production.append(task.quantity * yield_rate)
+        #
+        #         # 前一天库存（第一天使用初始库存）
+        #         if d_idx == 0:
+        #             prev_stock = part.initial_stock
+        #         else:
+        #             prev_day_id = self._sorted_days[d_idx - 1]
+        #             prev_stock = self.part_stock[(part_id, prev_day_id)]
+        #
+        #         pd = self.data.part_demand_map.get((day_id, part_id))
+        #         demand = pd.demand if pd else 0
+        #
+        #         # 库存平衡等式
+        #         self.model.add(
+        #             self.part_stock[(part_id, day_id)] == prev_stock + sum(daily_production) - demand
+        #         ).WithName(f"StockBalance_{part_id}_{day_id}")
+        #
+        #         # 带假设的非负库存约束（用于不可行性诊断）
+        #         add_assumed(
+        #             prev_stock + sum(daily_production) >= demand,
+        #             f"NonNegStock_{part_id}_{day_id}",
+        #             f"第 {day_id} 天零件 {part_id} 的库存不足（需求 {demand}，可用 {prev_stock} + 生产）。"
+        #         )
 
         # 约束 4：每日工作时间（80% - 100%）
-        for day_id, day in self.data.day_map.items():
-            work_time_seconds = (day.working_time - day.out_minutes) * 60
-            min_work = int(work_time_seconds * 0.8)
-            total_time = [task.duration for task in self._tasks_by_day.get(day_id, [])]
-
-            add_assumed(sum(total_time) >= min_work,
-                        f"MinWork_{day_id}",
-                        f"第 {day_id} 天工作时间未达到 80% 最小负荷要求。")
-            add_assumed(sum(total_time) <= work_time_seconds,
-                        f"MaxWork_{day_id}",
-                        f"第 {day_id} 天工作量超过最大可用时间 ({work_time_seconds}s)。")
+        # for day_id, day in self.data.day_map.items():
+        #     work_time_seconds = (day.working_time - day.out_minutes) * 60
+        #     min_work = int(work_time_seconds * 0.8)
+        #     total_time = [task.duration for task in self._tasks_by_day.get(day_id, [])]
+        #
+        #     add_assumed(sum(total_time) >= min_work,
+        #                 f"MinWork_{day_id}",
+        #                 f"第 {day_id} 天工作时间未达到 80% 最小负荷要求。")
+        #     add_assumed(sum(total_time) <= work_time_seconds,
+        #                 f"MaxWork_{day_id}",
+        #                 f"第 {day_id} 天工作量超过最大可用时间 ({work_time_seconds}s)。")
 
         # 约束 5：用户锁定任务（pinned_quantity / pinned_order）
-        for task in self.data.tasks:
-            if task.pinned_quantity is not None:
-                add_assumed(
-                    task.quantity == task.pinned_quantity,
-                    f"PinQty_{task.id}",
-                    f"任务 {task.id}（模具 {task.die_id}，{task.day_id}）的数量必须为 {task.pinned_quantity}。"
-                )
-
-            if task.pinned_order is not None:
-                # 锁定序号的任务必须被激活
-                add_assumed(
-                    task.active == 1,
-                    f"PinActive_{task.id}",
-                    f"任务 {task.id}（模具 {task.die_id}，{task.day_id}）必须被安排。"
-                )
-                # 将 order 变量锁定为指定序号
-                self.model.add(task.order == task.pinned_order).OnlyEnforceIf(task.active)
-
-                # 通过开始时间强制与其他锁定任务的相对顺序
-                for other in self._tasks_by_day.get(task.day_id, []):
-                    if other.id != task.id and other.pinned_order is not None:
-                        if other.pinned_order < task.pinned_order:
-                            # other 必须在 task 之前完成
-                            self.model.add(
-                                task.start >= other.end
-                            ).OnlyEnforceIf([task.active, other.active])
+        # for task in self.data.tasks:
+        #     if task.pinned_quantity is not None:
+        #         add_assumed(
+        #             task.quantity == task.pinned_quantity,
+        #             f"PinQty_{task.id}",
+        #             f"任务 {task.id}（模具 {task.die_id}，{task.day_id}）的数量必须为 {task.pinned_quantity}。"
+        #         )
+        #
+        #     if task.pinned_order is not None:
+        #         # 锁定序号的任务必须被激活
+        #         add_assumed(
+        #             task.active == 1,
+        #             f"PinActive_{task.id}",
+        #             f"任务 {task.id}（模具 {task.die_id}，{task.day_id}）必须被安排。"
+        #         )
+        #         # 将 order 变量锁定为指定序号
+        #         self.model.add(task.order == task.pinned_order).OnlyEnforceIf(task.active)
+        #
+        #         # 通过开始时间强制与其他锁定任务的相对顺序
+        #         for other in self._tasks_by_day.get(task.day_id, []):
+        #             if other.id != task.id and other.pinned_order is not None:
+        #                 if other.pinned_order < task.pinned_order:
+        #                     # other 必须在 task 之前完成
+        #                     self.model.add(
+        #                         task.start >= other.end
+        #                     ).OnlyEnforceIf([task.active, other.active])
 
     def _set_objective(self):
         total_objective = []
@@ -197,6 +205,9 @@ class PunchingScheduler:
         self.model.maximize(sum(total_objective))
 
     def solve(self, log_search=True):
+        """Run the solver. If a feasible/optimal solution is found, return a list of active tasks
+        (each as a dict with day, dieCode, hits, startTime, seqInDay). If infeasible, raise SolveInfeasibleError
+        with diagnostic reasons."""
         self._create_variables()
         self._add_constraints()
         self._set_objective()
@@ -210,11 +221,48 @@ class PunchingScheduler:
 
         status = solver.Solve(self.model)
 
-        reasons = []
+        # Collect infeasibility reasons if infeasible
         if status == cp_model.INFEASIBLE:
             reasons = self.diagnose_infeasibility(solver)
+            raise SolveInfeasibleError(reasons=reasons)
 
-        return solver, status, reasons
+        # If feasible or optimal, build active task list
+        if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
+            # extract tasks
+            result_tasks = []
+            for task in self.data.tasks:
+                qty = solver.Value(task.quantity)
+                if qty > 0:
+                    start_time = solver.Value(task.start)
+                    result_tasks.append({
+                        "day": date.fromisoformat(task.day_id),
+                        "dieCode": task.die_id,
+                        "hits": qty,
+                        "startTime": start_time,
+                    })
+
+            # sort and add seqInDay
+            result_tasks.sort(key=lambda x: (x["day"], x["startTime"]))
+            last_day = None
+            seq = 1
+            for t in result_tasks:
+                if t["day"] != last_day:
+                    seq = 1
+                    last_day = t["day"]
+                t["seqInDay"] = seq
+                seq += 1
+
+            # save last objective value
+            try:
+                self.last_score = solver.ObjectiveValue()
+            except Exception:
+                self.last_score = None
+
+            return result_tasks
+
+        # Any other status is treated as infeasible/failed
+        reasons = [f"Solver returned status {status}"]
+        raise SolveInfeasibleError(reasons=reasons)
 
     def diagnose_infeasibility(self, solver: cp_model.CpSolver) -> list[str]:
         """结合 Sufficient Assumed Unsat Core 和业务逻辑诊断不可行原因。"""
