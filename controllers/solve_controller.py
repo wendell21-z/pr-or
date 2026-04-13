@@ -242,11 +242,15 @@ async def get_all_solve_results():
 
 @router.get("/result/latest")
 async def get_latest_solve_result():
-    """获取最新的排产结果（预览）"""
-    # 返回最近一个线体的结果
+    """获取最新的排产结果（预览）。返回最近有结果的线体的结果（非空）。"""
     if not db.solve_results:
         return {"data": []}
-    
-    # 获取最后一个线体的结果
-    last_line_id = list(db.solve_results.keys())[-1]
-    return {"data": db.solve_results.get(last_line_id, [])}
+
+    # 返回最近一个非空结果的线体
+    for line_id in reversed(list(db.solve_results.keys())):
+        results = db.solve_results.get(line_id) or []
+        if results:
+            return {"data": results}
+
+    # 若所有结果均为空，返回空列表
+    return {"data": []}

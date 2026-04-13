@@ -107,9 +107,10 @@ async function runSolve() {
       if (result?.reasons && Array.isArray(result.reasons) && result.reasons.length) {
         ElMessage.info(result.reasons.join('; '))
       }
-      return
+    } else {
+      ElMessage.success(result?.message || '排产已启动')
     }
-    ElMessage.success(result?.message || '排产已启动')
+    // Always refresh state and results so UI shows any available data (including partial/fallback)
     await Promise.all([refreshSolveState(), loadLatestSolveResult(), loadSolveResults()])
   } finally {
     solveLoading.value = false
