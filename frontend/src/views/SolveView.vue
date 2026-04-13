@@ -102,16 +102,28 @@ async function runSolve() {
   solveLoading.value = true
   try {
     const result = await startSolve({ ...solveForm })
+
     if (result?.status === 'FAILED') {
       ElMessage.error(result?.message || '排产失败')
       if (result?.reasons && Array.isArray(result.reasons) && result.reasons.length) {
         ElMessage.info(result.reasons.join('; '))
       }
+    } else if (result?.status === 'PARTIAL') {
+      ElMessage.warning(result?.message || '部分排产结果已生成')
     } else {
       ElMessage.success(result?.message || '排产已启动')
     }
-    // Always refresh state and results so UI shows any available data (including partial/fallback)
-    await Promise.all([refreshSolveState(), loadLatestSolveResult(), loadSolveResults()])
+
+    // If backend returned immediate results, use them to populate UI without extra round-trip
+    if (result?.results && Array.isArray(result.results) && result.results.length) {
+      const normalized = normalizeList({ data: result.results })
+      latestSolveResults.value = normalized.slice(0, 8)
+      allSolveResults.value = normalized
+      await refreshSolveState()
+    } else {
+      // Fallback: load from APIs
+      await Promise.all([refreshSolveState(), loadLatestSolveResult(), loadSolveResults()])
+    }
   } finally {
     solveLoading.value = false
   }
