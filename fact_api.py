@@ -242,7 +242,7 @@ def upsert_day() -> ResponseReturnValue:
     working_time_text = _get(data, "workingTimeText", "woking_time", "working_time")
     if db.session.get(WorkingTime, working_time_text) is None:
         return _error(f"{working_time_text}未设置")
-    entity = db.session.get(Day, day.isoformat()) or Day(id=day.isoformat())
+    entity = ensure_day(day)
     entity.woking_time = working_time_text
     entity.out_minutes = _get(data, "outMinutes", "out_minutes", default=0)
     return _json(_save_json(entity))
@@ -391,6 +391,8 @@ def delete_dunnage(id_: int) -> ResponseReturnValue:
 def _upsert_dunnage_inventory(data: Mapping[str, Any]) -> DunnageInventoryHistory:
     dunnage_id = _get(data, "dunnageId", "dunnage_id")
     day = _parse_date(_get(data, "day"))
+    # ensure Day row exists for this date
+    ensure_day(day)
     if db.session.get(Dunnage, dunnage_id) is None:
         raise ValueError(f"器具（{dunnage_id}）不存在")
     entity = _first_by(DunnageInventoryHistory, day=day, dunnage_id=dunnage_id)
@@ -591,7 +593,9 @@ def _upsert_part_inventory(data: Mapping[str, Any]) -> PartInventory:
     if part is None:
         raise ValueError(f"对应零件（{code}）不存在")
     day = _parse_date(_get(data, "day"))
-    day_id = day.isoformat() if day is not None else None
+    # ensure Day row exists and use its id as day_id
+    day_obj = ensure_day(day)
+    day_id = day_obj.id if day_obj is not None else (day.isoformat() if day is not None else None)
     entity = _first_by(PartInventory, day_id=day_id, part_id=part.id)
     entity = entity or PartInventory(day_id=day_id, part_id=part.id)
     entity.quantity = _get(data, "quantity")
