@@ -195,10 +195,10 @@ def _serialize(entity: Any | None) -> JsonDict | None:
         }
     if isinstance(entity, PartInventory):
         return {
-            "id": entity.id,
             "part": _serialize(db.session.get(Part, entity.part_id)),
             "partId": entity.part_id,
-            "day": entity.day.isoformat() if entity.day else None,
+            "day": entity.day_id,
+            "dayId": entity.day_id,
             "quantity": entity.quantity,
         }
     return {}
@@ -591,8 +591,9 @@ def _upsert_part_inventory(data: Mapping[str, Any]) -> PartInventory:
     if part is None:
         raise ValueError(f"对应零件（{code}）不存在")
     day = _parse_date(_get(data, "day"))
-    entity = _first_by(PartInventory, day=day, part_id=part.id)
-    entity = entity or PartInventory(day=day, part_id=part.id)
+    day_id = day.isoformat() if day is not None else None
+    entity = _first_by(PartInventory, day_id=day_id, part_id=part.id)
+    entity = entity or PartInventory(day_id=day_id, part_id=part.id)
     entity.quantity = _get(data, "quantity")
     return entity
 
@@ -627,7 +628,7 @@ def list_part_inventory() -> ResponseReturnValue:
     return _json(_serialize_all(_all(PartInventory)))
 
 
-@fact_bp.delete("/part-inventory/<int:id_>")
-def delete_part_inventory(id_: int) -> ResponseReturnValue:
-    """Path: id: int. Returns: 204 No Content."""
-    return _delete(PartInventory, id_)
+@fact_bp.delete("/part-inventory/<int:part_id>/<path:day_id>")
+def delete_part_inventory(part_id: int, day_id: str) -> ResponseReturnValue:
+    """Path: part_id:int, day_id:str (YYYY-MM-DD). Returns: 204 No Content."""
+    return _delete(PartInventory, (day_id, part_id))

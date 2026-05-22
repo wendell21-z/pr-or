@@ -122,9 +122,8 @@ class Part(Base):
 
 class PartInventory(Base):
     __tablename__ = 'part_inventory'
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    day: Mapped[Optional[datetime.date]] = mapped_column(Date)
-    part_id: Mapped[Optional[int]] = mapped_column(Integer)
+    day_id: Mapped[str] = mapped_column(String(255, 'utf8mb4_general_ci'), primary_key=True)
+    part_id: Mapped[int] = mapped_column(Integer, primary_key=True)
     quantity: Mapped[Optional[int]] = mapped_column(Integer)
 
 
