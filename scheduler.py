@@ -87,8 +87,8 @@ class ProductionScheduler:
         self.dunnages = {}
         if dunnage_ids:
             dun_query = select(Dunnage).where(Dunnage.id.in_(dunnage_ids))
-            dun_res = db.session.execute(dun_query).mappings().all()
-            self.dunnages = {d['id']: dict(d) for d in dun_res}
+            dun_res = db.session.execute(dun_query).scalars().all()
+            self.dunnages = {d.id: d for d in dun_res}
 
         # 关联零件和器具，计算初始可用总量
         for p_id, p in self.parts.items():
@@ -113,9 +113,9 @@ class ProductionScheduler:
         for d_id, dunnage in self.dunnages.items():
             related_parts = [p_id for p_id, p in self.parts.items() if p.dunnage_id == d_id]
             initial_stock = sum(self.initial_inventory.get(p_id, 0) for p_id in related_parts)
-            stock_capacity = self.empty_dunnages[d_id] * (dunnage['capacity'] or 1) + initial_stock
+            stock_capacity = self.empty_dunnages[d_id] * (dunnage.capacity or 1) + initial_stock
             self.dunnage_stock_capacity[d_id] = stock_capacity
-            dunnage['available_quantity'] = stock_capacity
+            setattr(dunnage, 'available_quantity', stock_capacity)
 
         # 8. 获取锁定任务
         self.pinned_tasks = []
@@ -141,6 +141,7 @@ class ProductionScheduler:
         except Exception:
             inv_map = {}
         self.initial_inventory = {p_id: inv_map.get(p_id, 0) for p_id in self.parts}
+
     def _compute_consumption(self, part_ids: list[Any]):
         # Consumption(part, day) = Sum(car_usage(car, day) * car_part(car, part))
         self.consumption = {p_id: [0] * self.days_count for p_id in part_ids}
@@ -304,9 +305,9 @@ class ProductionScheduler:
                         d = getattr(part, 'dunnage', None)
                         if d:
                             dunnage_info = {
-                                "id": d['id'],
-                                "name": d['name'],
-                                "available_quantity": d.get('available_quantity')
+                                "id": d.id,
+                                "name": d.name,
+                                "available_quantity": getattr(d, 'available_quantity', None)
                             }
 
                         day_tasks.append({
