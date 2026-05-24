@@ -102,7 +102,7 @@ class ProductionScheduler:
             dun_inv_query = select(DunnageInventoryHistory).where(
                 and_(
                     DunnageInventoryHistory.dunnage_id.in_(dunnage_ids),
-                    DunnageInventoryHistory.day == self.start_date
+                    DunnageInventoryHistory.day_id == self.start_date_str
                 )
             )
             dun_inv_res = db.session.execute(dun_inv_query).mappings().all()

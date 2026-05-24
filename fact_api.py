@@ -145,7 +145,8 @@ def _serialize(entity: Any | None) -> JsonDict | None:
     if isinstance(entity, DunnageInventoryHistory):
         return {
             "id": entity.id,
-            "day": entity.day.isoformat() if entity.day else None,
+            "day": entity.day_id,
+            "dayId": entity.day_id,
             "dunnage": _serialize(db.session.get(Dunnage, entity.dunnage_id)),
             "dunnageId": entity.dunnage_id,
             "quantity": entity.quantity,
@@ -391,12 +392,13 @@ def delete_dunnage(id_: int) -> ResponseReturnValue:
 def _upsert_dunnage_inventory(data: Mapping[str, Any]) -> DunnageInventoryHistory:
     dunnage_id = _get(data, "dunnageId", "dunnage_id")
     day = _parse_date(_get(data, "day"))
-    # ensure Day row exists for this date
-    ensure_day(day)
+    # ensure Day row exists and use its id as day_id
+    day_obj = ensure_day(day)
+    day_id = day_obj.id if day_obj is not None else (day.isoformat() if day is not None else None)
     if db.session.get(Dunnage, dunnage_id) is None:
         raise ValueError(f"器具（{dunnage_id}）不存在")
-    entity = _first_by(DunnageInventoryHistory, day=day, dunnage_id=dunnage_id)
-    entity = entity or DunnageInventoryHistory(day=day, dunnage_id=dunnage_id)
+    entity = _first_by(DunnageInventoryHistory, day_id=day_id, dunnage_id=dunnage_id)
+    entity = entity or DunnageInventoryHistory(day_id=day_id, dunnage_id=dunnage_id)
     entity.quantity = _get(data, "quantity")
     entity.empty_quantity = _get(data, "emptyQuantity", "empty_quantity")
     entity.repair_quantity = _get(data, "repairQuantity", "repair_quantity")
@@ -433,18 +435,20 @@ def upsert_dunnage_inventory_batch() -> ResponseReturnValue:
 @fact_bp.get("/dunnage-inventory/latest")
 def latest_dunnage_inventory() -> ResponseReturnValue:
     """No params. Returns: list[DunnageInventoryHistory]."""
-    latest_day = db.session.query(func.max(DunnageInventoryHistory.day)).scalar()
+    latest_day = db.session.query(func.max(DunnageInventoryHistory.day_id)).scalar()
     if latest_day is None:
         return _json([])
-    records = db.session.query(DunnageInventoryHistory).filter_by(day=latest_day).all()
+    records = db.session.query(DunnageInventoryHistory).filter_by(day_id=latest_day).all()
     return _json(_serialize_all(records))
 
 
 @fact_bp.get("/dunnage-inventory")
 def list_dunnage_inventory_by_day() -> ResponseReturnValue:
     """Query: day: date. Returns: list[DunnageInventoryHistory]."""
+    day = _parse_date(request.args.get("day"))
+    day_id = day.isoformat() if day is not None else None
     records = db.session.query(DunnageInventoryHistory).filter_by(
-        day=_parse_date(request.args.get("day"))
+        day_id=day_id
     ).all()
     return _json(_serialize_all(records))
 
