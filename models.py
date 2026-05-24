@@ -90,11 +90,11 @@ class Dunnage(Base):
 class DunnageInventoryHistory(Base):
     __tablename__ = 'dunnage_inventory_history'
     __table_args__ = (
-        Index('UK9dw1u2d0a78fjbl6wjnuf94y0', 'day', 'dunnage_id', unique=True),
+        Index('UK9dw1u2d0a78fjbl6wjnuf94y0', 'day_id', 'dunnage_id', unique=True),
     )
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     dunnage_id: Mapped[Optional[int]] = mapped_column(Integer)
-    day: Mapped[Optional[datetime.date]] = mapped_column(Date)
+    day_id: Mapped[str] = mapped_column(String(255, 'utf8mb4_general_ci'))
     empty_quantity: Mapped[Optional[int]] = mapped_column(Integer)
     pending_repair_quantity: Mapped[Optional[int]] = mapped_column(Integer)
     quantity: Mapped[Optional[int]] = mapped_column(Integer)
