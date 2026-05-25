@@ -105,9 +105,9 @@ class ProductionScheduler:
                     DunnageInventoryHistory.day_id == self.start_date_str
                 )
             )
-            dun_inv_res = db.session.execute(dun_inv_query).mappings().all()
+            dun_inv_res = db.session.execute(dun_inv_query).scalars().all()
             for row in dun_inv_res:
-                self.empty_dunnages[row['dunnage_id']] = row['empty_quantity'] or 0
+                self.empty_dunnages[row.dunnage_id] = row.empty_quantity or 0
 
         self.dunnage_stock_capacity = {}
         for d_id, dunnage in self.dunnages.items():
@@ -186,6 +186,13 @@ class ProductionScheduler:
         return die_ids
 
     def solve(self):
+        if self.pinned_tasks:
+            for task in self.pinned_tasks:
+                print("DEBUG: pinned task:", task)
+        # quick checks
+        for d_str, cap in zip(self.dates, self.day_capacity):
+            if cap < 120:
+                print(f"DEBUG: warning - day {d_str} capacity {cap} < 120")
         model = cp_model.CpModel()
         
         # 变量定义
@@ -260,35 +267,30 @@ class ProductionScheduler:
             model.add(qty_vars[d_id, t] == 0).only_enforce_if(v.Not())
             # 如果生产，qty 必须大于 0 (已经在 120min 约束中体现)
 
-        # 目标函数：优化优先级
-        # 优先级逻辑：库存越低（相对于未来需求），优先级越高。
-        # 我们希望尽量满足需求，避免库存为0（已经约束了 stock >= 0）。
-        # 为了体现优先级变化，我们可以最大化期末总库存，或者最小化由于库存低带来的“风险值”。
-        # 用户提到“哪天生产取决于使用量和库存”，我们可以引入一个基于库存水平的惩罚。
-        
-        # 简单的目标：最小化 stock 的总和的负值（即最大化库存），
-        # 但这会导致一直生产。
-        # 更好的目标：满足需求的前提下，尽量推迟生产以节省器具，或者尽早生产以满足紧缺。
-        # 这里我们按用户要求的优先级：零件使用量大、库存低的优先。
-        
+        # 目标函数：优先满足当前库存相对用量不足的零件
+        # 定义 deficit = max(0, consumption - stock)。尽量最大化 deficit 的补足（即优先生产 deficit 较大的条目）。
+        deficit_vars = {}
         obj_expr = []
+        BIG = 10**6
         for p_id in self.parts.keys():
-            # 计算该零件的总需求，用于归一化
-            total_cons = sum(self.consumption[p_id]) or 1
             for t in range(self.days_count):
-                # 权重：随时间递减，鼓励尽早解决紧缺
-                # 库存权重：库存越低，贡献的目标值越大（如果目标是 Maximize）
-                # 我们可以使用一个倒置的库存衡量： (Total_7day_Cons - stock)
-                weight = (self.days_count - t) 
-                obj_expr.append(stock_vars[p_id, t] * weight)
+                dvar = model.new_int_var(0, BIG, f'deficit_{p_id}_{t}')
+                deficit_vars[p_id, t] = dvar
+                # deficit >= consumption - stock
+                model.add(dvar >= self.consumption[p_id][t] - stock_vars[p_id, t])
+                # 权重：鼓励尽早解决紧缺
+                weight = (self.days_count - t)
+                obj_expr.append(dvar * weight)
 
         model.maximize(sum(obj_expr))
         
         # 求解
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 30.0
+        print('DEBUG: num produce_vars=', len(produce_vars), 'num qty_vars=', len(qty_vars), 'num stock_vars=', len(stock_vars))
+        print('DEBUG: day_capacity=', self.day_capacity)
         status = solver.solve(model)
-        
+        print('DEBUG: solver status=', status)
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
             results = []
             for t, d_str in enumerate(self.dates):
@@ -324,4 +326,5 @@ class ProductionScheduler:
                 })
             return results
         else:
+            print('DEBUG: no feasible solution')
             return None
