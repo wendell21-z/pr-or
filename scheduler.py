@@ -12,6 +12,14 @@ from utils import ensure_day
 
 class ProductionScheduler:
     def __init__(self, line_id: int, start_date_str: str, days_count: int = 7):
+        self.constraints = {
+            'daily_time':True,
+            'dunnage_capacity':True,
+            'deficit_objective':False,
+            'pinned_tasks':False,
+            'ensure_next_day_usage':False,
+            'require_daily_production':False,
+        }
         self.pinned_tasks = None
         self.dunnage_stock_capacity = None
         self.empty_dunnages = None
@@ -109,6 +117,7 @@ class ProductionScheduler:
             for row in dun_inv_res:
                 self.empty_dunnages[row.dunnage_id] = row.empty_quantity or 0
 
+
         self.dunnage_stock_capacity = {}
         for d_id, dunnage in self.dunnages.items():
             related_parts = [p_id for p_id, p in self.parts.items() if p.dunnage_id == d_id]
@@ -198,7 +207,7 @@ class ProductionScheduler:
         # 变量定义
         # produce_vars[die_id, day_idx]: bool, 是否在该日生产该模具
         produce_vars = {}
-        # qty_vars[die_id, day_idx]: int, 生产量
+        # qty_vars[p_id, day_idx]: int, 每个零件的生产量（由模具生产分配得到）
         qty_vars = {}
         
         # 预估最大产量 (基于全天生产)
@@ -207,7 +216,15 @@ class ProductionScheduler:
             max_qty = akz * 1440
             for t in range(self.days_count):
                 produce_vars[d_id, t] = model.new_bool_var(f'produce_{d_id}_{t}')
-                qty_vars[d_id, t] = model.new_int_var(0, max_qty * 2, f'qty_{d_id}_{t}')
+
+        # 为每个零件创建 qty 变量（上限基于其模具的 akz）
+        for p_id in self.parts.keys():
+            die_id = self.parts[p_id].die_id
+            die = self.dies.get(die_id)
+            akz = die.akz or 1 if die else 1
+            max_qty = akz * 1440 * 2
+            for t in range(self.days_count):
+                qty_vars[p_id, t] = model.new_int_var(0, max_qty, f'qty_{p_id}_{t}')
 
         # 零件库存变量
         stock_vars = {}
@@ -219,76 +236,99 @@ class ProductionScheduler:
         # 约束实现
         for t in range(self.days_count):
             # 1. 每日最大生产时间限制
-            # sum(qty / akz) <= day_capacity
-            # 线性化: sum(qty * 1) <= day_capacity * akz ... 不对，akz 每个 die 不同
-            # sum(qty_vars[d_id, t] // akz) <= day_capacity[t]
             time_expr = []
             for d_id, die in self.dies.items():
                 akz = die.akz or 1
-                # qty = minutes * akz
-                # 创建一个时间变量
+                # 每个模具每天的生产时间
                 minutes_var = model.new_int_var(0, self.day_capacity[t], f'minutes_{d_id}_{t}')
-                model.add(qty_vars[d_id, t] == minutes_var * akz)
-                # 此外，如果生产，则至少 120 分钟
-                model.add(minutes_var >= 120 * produce_vars[d_id, t])
+                # 模具产量 = 生产时间 * akz -> 等于其相关零件产量之和
+                related_p_ids = self.die_to_parts.get(d_id, [])
+                if related_p_ids:
+                    model.add(sum(qty_vars[p_id, t] for p_id in related_p_ids) == minutes_var * akz).with_name(f'qty_eq_minutes_{d_id}_{t}')
+                else:
+                    # 如果模具没有关联零件，仍然保持等式（右侧为 0）
+                    model.add(0 == minutes_var * akz).with_name(f'qty_eq_minutes_{d_id}_{t}')
+                # 如果生产，则至少 120 分钟
+                model.add(minutes_var >= 120 * produce_vars[d_id, t]).with_name(f'min_prod_time_{d_id}_{t}')
                 time_expr.append(minutes_var)
-            
-            model.add(sum(time_expr) <= self.day_capacity[t])
+            # 每天总生产时间 <= 每天可用时间
+            model.add(sum(time_expr) <= self.day_capacity[t]).with_name(f'daily_time_{t}')
+
+            # 每天至少有一个任务
+            model.add(sum(produce_vars[d_id, t] for d_id in self.dies.keys()) >= 1).with_name(f'require_daily_prod_{t}')
 
             # 2. 库存平衡
             for p_id in self.parts.keys():
                 die_id = self.parts[p_id].die_id
-                prev_stock = self.initial_inventory[p_id] if t == 0 else stock_vars[p_id, t-1]
-                # 这里的 qty 是模具产量。如果一个模具产出多个零件，这里需要调整。目前假设 1:1 或模具产出即零件产出
-                model.add(stock_vars[p_id, t] == prev_stock + qty_vars[die_id, t] - self.consumption[p_id][t])
+                prev_stock = self.initial_inventory[p_id] if t == 0 else stock_vars[p_id, t-1]  # 上一天零件的库存
+                # 零件库存 == 上一天库存 + 今天该零件的产量 - 今天消耗
+                model.add(stock_vars[p_id, t] == prev_stock + qty_vars[p_id, t] - self.consumption[p_id][t]).with_name(f'stock_balance_{p_id}_{t}')
 
             # 3. 器具容量限制：同一器具下所有相关零件的库存总和不能超过起始日容量上限
-            for dun_id, dunnage in self.dunnages.items():
-                related_parts = [p_id for p_id, p in self.parts.items() if p.dunnage_id == dun_id]
-                if not related_parts: continue
+            if self.constraints.get('dunnage_capacity', False):
+                for dun_id, dunnage in self.dunnages.items():
+                    related_parts = [p_id for p_id, p in self.parts.items() if p.dunnage_id == dun_id]
+                    if not related_parts: continue
 
-                model.add(
-                    sum(stock_vars[p_id, t] for p_id in related_parts)
-                    <= self.dunnage_stock_capacity[dun_id]
-                )
+                    model.add(
+                        sum(stock_vars[p_id, t] for p_id in related_parts)
+                        <= self.dunnage_stock_capacity[dun_id]
+                    ).with_name(f'dunnage_cap_{dun_id}_{t}')
+
+                # 3b. Ensure today's final stock >= next day's consumption (safety)
+                if self.constraints.get('ensure_next_day_usage', False) and t < self.days_count - 1:
+                    for p_id in self.parts.keys():
+                        model.add(stock_vars[p_id, t] >= self.consumption[p_id][t+1]).with_name(f'ensure_next_day_usage_{p_id}_{t}')
 
         # 4. 锁定任务
-        for task in self.pinned_tasks:
-            d_id = task['die_id']
-            d_str = task['day_id']
-            t = self.dates.index(d_str)
-            if task['is_day_pinned']:
-                model.add(produce_vars[d_id, t] == 1)
-            if task['is_quantity_pinned'] and task['quantity'] is not None:
-                model.add(qty_vars[d_id, t] == task['quantity'])
+        if self.constraints.get('pinned_tasks', False):
+            for task in self.pinned_tasks:
+                d_id = task['die_id']
+                d_str = task['day_id']
+                t = self.dates.index(d_str)
+                if task['is_day_pinned']:
+                    model.add(produce_vars[d_id, t] == 1).with_name(f'pinned_day_{d_id}_{t}')
+                if task['is_quantity_pinned'] and task['quantity'] is not None:
+                    related_p_ids = self.die_to_parts.get(d_id, [])
+                    if related_p_ids:
+                        model.add(sum(qty_vars[p_id, t] for p_id in related_p_ids) == task['quantity']).with_name(f'pinned_qty_{d_id}_{t}')
+                    else:
+                        # no related parts, pin to 0 equality check
+                        model.add(0 == task['quantity']).with_name(f'pinned_qty_{d_id}_{t}')
 
         # 5. 如果 produce_vars 为 0，则 qty_vars 为 0
         for (d_id, t), v in produce_vars.items():
-            model.add(qty_vars[d_id, t] == 0).only_enforce_if(v.Not())
-            # 如果生产，qty 必须大于 0 (已经在 120min 约束中体现)
+            related_p_ids = self.die_to_parts.get(d_id, [])
+            for p_id in related_p_ids:
+                model.add(qty_vars[p_id, t] == 0).with_name(f'qty_zero_if_not_prod_{d_id}_{p_id}_{t}').only_enforce_if(v.Not())
+            # 如果生产，零件 qty 必须大于 0 (已经在 120min 约束中体现)
 
         # 目标函数：优先满足当前库存相对用量不足的零件
         # 定义 deficit = max(0, consumption - stock)。尽量最大化 deficit 的补足（即优先生产 deficit 较大的条目）。
-        deficit_vars = {}
-        obj_expr = []
-        BIG = 10**6
-        for p_id in self.parts.keys():
-            for t in range(self.days_count):
-                dvar = model.new_int_var(0, BIG, f'deficit_{p_id}_{t}')
-                deficit_vars[p_id, t] = dvar
-                # deficit >= consumption - stock
-                model.add(dvar >= self.consumption[p_id][t] - stock_vars[p_id, t])
-                # 权重：鼓励尽早解决紧缺
-                weight = (self.days_count - t)
-                obj_expr.append(dvar * weight)
+        if self.constraints.get('deficit_objective', False):
+            deficit_vars = {}
+            obj_expr = []
+            BIG = 10**6
+            for p_id in self.parts.keys():
+                for t in range(self.days_count):
+                    dvar = model.new_int_var(0, BIG, f'deficit_{p_id}_{t}')
+                    deficit_vars[p_id, t] = dvar
+                    # deficit >= consumption - stock
+                    model.add(dvar >= self.consumption[p_id][t] - stock_vars[p_id, t]).with_name(f'deficit_lowerbound_{p_id}_{t}')
+                    # 权重：鼓励尽早解决紧缺
+                    weight = (self.days_count - t)
+                    obj_expr.append(dvar * weight)
 
-        model.maximize(sum(obj_expr))
+            model.maximize(sum(obj_expr))
+        else:
+            # No objective: find any feasible solution
+            pass
         
         # 求解
         solver = cp_model.CpSolver()
-        solver.parameters.max_time_in_seconds = 30.0
-        print('DEBUG: num produce_vars=', len(produce_vars), 'num qty_vars=', len(qty_vars), 'num stock_vars=', len(stock_vars))
-        print('DEBUG: day_capacity=', self.day_capacity)
+        solver.parameters.log_search_progress = True
+        solver.parameters.cp_model_presolve = True
+        solver.parameters.log_to_stdout = True
         status = solver.solve(model)
         print('DEBUG: solver status=', status)
         if status == cp_model.OPTIMAL or status == cp_model.FEASIBLE:
@@ -297,11 +337,14 @@ class ProductionScheduler:
                 day_tasks = []
                 for d_id, die in self.dies.items():
                     if solver.Value(produce_vars[d_id, t]):
-                        q = solver.Value(qty_vars[d_id, t])
+                        related_p_ids = self.die_to_parts.get(d_id, [])
+                        if related_p_ids:
+                            q = sum(solver.Value(qty_vars[p_id, t]) for p_id in related_p_ids)
+                        else:
+                            q = 0
                         
                         # 获取模具关联的器具信息
                         dunnage_info = None
-                        related_p_ids = self.die_to_parts.get(d_id, [])
                         if related_p_ids:
                             part = self.parts[related_p_ids[0]]
                         d = getattr(part, 'dunnage', None)
