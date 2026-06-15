@@ -144,7 +144,6 @@ def _serialize(entity: Any | None) -> JsonDict | None:
         return {"id": entity.id, "name": entity.name, "capacity": entity.capacity}
     if isinstance(entity, DunnageInventoryHistory):
         return {
-            "id": entity.id,
             "day": entity.day_id,
             "dayId": entity.day_id,
             "dunnage": _serialize(db.session.get(Dunnage, entity.dunnage_id)),
@@ -459,10 +458,14 @@ def list_dunnage_inventory() -> ResponseReturnValue:
     return _json(_serialize_all(_all(DunnageInventoryHistory)))
 
 
-@fact_bp.delete("/dunnage-inventory/<int:id_>")
-def delete_dunnage_inventory(id_: int) -> ResponseReturnValue:
-    """Path: id: int. Returns: 204 No Content."""
-    return _delete(DunnageInventoryHistory, id_)
+@fact_bp.delete("/dunnage-inventory/<int:dunnage_id>/<path:day_id>")
+def delete_dunnage_inventory(dunnage_id: int, day_id: str) -> ResponseReturnValue:
+    """Path: dunnage_id: int, day_id: date. Returns: 204 No Content."""
+    entity = db.session.get(DunnageInventoryHistory, (dunnage_id, day_id))
+    if entity is not None:
+        db.session.delete(entity)
+        db.session.commit()
+    return _json(None, 204)
 
 
 @fact_bp.post("/part")

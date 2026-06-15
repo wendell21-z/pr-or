@@ -1,9 +1,9 @@
-from typing import Optional
 import datetime
+from typing import Optional
 
-from sqlalchemy import BigInteger, Column, Date, DateTime, ForeignKeyConstraint, Index, Integer, String, Table, Text
-from sqlalchemy.dialects.mysql import BIT
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import BigInteger, DateTime, ForeignKeyConstraint, Index, Integer, String, Text
+from sqlalchemy.dialects.mysql import BIT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -89,12 +89,9 @@ class Dunnage(Base):
 
 class DunnageInventoryHistory(Base):
     __tablename__ = 'dunnage_inventory_history'
-    __table_args__ = (
-        Index('UK9dw1u2d0a78fjbl6wjnuf94y0', 'day_id', 'dunnage_id', unique=True),
-    )
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    dunnage_id: Mapped[Optional[int]] = mapped_column(Integer)
-    day_id: Mapped[str] = mapped_column(String(255, 'utf8mb4_general_ci'))
+
+    dunnage_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    day_id: Mapped[str] = mapped_column(String(255, 'utf8mb4_general_ci'), primary_key=True)
     empty_quantity: Mapped[Optional[int]] = mapped_column(Integer)
     pending_repair_quantity: Mapped[Optional[int]] = mapped_column(Integer)
     quantity: Mapped[Optional[int]] = mapped_column(Integer)
