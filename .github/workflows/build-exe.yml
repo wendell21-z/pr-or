@@ -31,22 +31,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build EXE with PyInstaller
-        run: >-
-          python -m PyInstaller
-          --onefile
-          --name "pr-or${{ matrix.arch }}"
-          --console
-          --add-data "config.py;."
-          --add-data "models.py;."
-          --add-data "scheduler.py;."
-          --add-data "fact_api.py;."
-          --add-data "utils.py;."
-          --hidden-import flask
-          --hidden-import flask_sqlalchemy
-          --hidden-import sqlalchemy
-          --hidden-import pymysql
-          --hidden-import ortools.sat.python.cp_model
-          app.py
+        run: python -m PyInstaller --onefile --name "pr-or${{ matrix.arch }}" --console --add-data "config.py;." app.py
         shell: pwsh
 
       - name: Upload artifact

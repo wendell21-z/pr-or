@@ -71,23 +71,14 @@ def create_app(config_input=None):
 
     return app
 
-def _keep_window():
-    """在异常退出时保持命令行窗口打开，显示错误信息。"""
-    print("\nPress Enter to exit...")
-    try:
-        input()
-    except Exception:
-        pass
-
-
 if __name__ == '__main__':
-    config_name = os.environ.get('FLASK_CONFIG', 'production')
-    app = create_app(config_name)
-    is_debug = app.config.get('DEBUG', False)
     try:
+        config_name = os.environ.get('FLASK_CONFIG', 'production')
+        app = create_app(config_name)
+        is_debug = app.config.get('DEBUG', False)
         app.run(debug=is_debug, host='0.0.0.0', port=8080)
     except Exception as e:
+        print(f"[ERROR] Failed to start Flask app: {e}")
         import traceback
-        print(f"\nERROR: {e}")
-        print(traceback.format_exc())
-        _keep_window()
+        traceback.print_exc()
+        input("Press Enter to exit...")
