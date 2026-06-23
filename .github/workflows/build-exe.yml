@@ -31,13 +31,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build EXE with PyInstaller
-        run: |
-          pyinstaller ^
-            --onefile ^
-            --name "pr-or^${{ matrix.arch }}" ^
-            --console ^
-            --add-data "config.py;." ^
-            app.py
+        run: python -m PyInstaller --onefile --name "pr-or${{ matrix.arch }}" --console --add-data "config.py;." app.py
         shell: pwsh
 
       - name: Upload artifact
