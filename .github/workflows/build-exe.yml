@@ -31,7 +31,20 @@ jobs:
           pip install -r requirements.txt
 
       - name: Build EXE with PyInstaller
-        run: python -m PyInstaller --onefile --name "pr-or${{ matrix.arch }}" --console --add-data "config.py;." --collect-all ortools app.py
+        run: >-
+          python -m PyInstaller
+          --onefile
+          --name "pr-or${{ matrix.arch }}"
+          --console
+          --add-data "config.py;."
+          --hidden-import ortools
+          --hidden-import ortools.sat
+          --hidden-import ortools.sat.python
+          --hidden-import ortools.sat.python.cp_model
+          --collect-all ortools
+          --collect-submodules ortools
+          --collect-binaries ortools
+          app.py
         shell: pwsh
 
       - name: Upload artifact
