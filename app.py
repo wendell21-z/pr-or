@@ -75,4 +75,11 @@ if __name__ == '__main__':
     config_name = os.environ.get('FLASK_CONFIG', 'production')
     app = create_app(config_name)
     is_debug = app.config.get('DEBUG', False)
-    app.run(debug=is_debug, host='0.0.0.0', port=8080)
+    try:
+        app.run(debug=is_debug, host='0.0.0.0', port=8080)
+    except Exception as e:
+        import traceback
+        print(f"ERROR: {e}")
+        print(traceback.format_exc())
+        print("\nPress Enter to exit...")
+        input()
