@@ -1,0 +1,20 @@
+{
+    "db_host": "localhost",
+    "db_port": 3306,
+    "db_name": "vw_aps_pr",
+    "db_user": "root",
+    "db_password": "root",
+    "production": {
+        "debug": false,
+        "log_level": "INFO",
+        "sqlalchemy_engine_options": {
+            "pool_size": 20,
+            "max_overflow": 10,
+            "pool_recycle": 3600,
+            "pool_pre_ping": true
+        }
+    },
+    "development": {
+        "debug": true
+    }
+}

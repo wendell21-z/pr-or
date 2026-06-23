@@ -1,22 +1,48 @@
 import os
+import sys
+import json
 import logging
 from flask import Flask, jsonify, request
-from config import config
 from models import db
 from scheduler import ProductionScheduler
 from fact_api import fact_bp
 
-def create_app(config_input=None):
-    if config_input is None:
-        config_name = os.environ.get('FLASK_CONFIG', 'default')
-        config_obj = config[config_name]
-    elif isinstance(config_input, str):
-        config_obj = config[config_input]
+CONFIG_FILE = os.path.join(os.path.dirname(__file__), 'app_config.json')
+
+def _get_config_path():
+    """获取配置文件路径，兼容 PyInstaller 打包后的环境。"""
+    if getattr(sys, 'frozen', False):
+        # PyInstaller 打包后，配置文件与 exe 同级
+        return os.path.join(os.path.dirname(sys.executable), 'app_config.json')
     else:
-        config_obj = config_input
+        return CONFIG_FILE
+
+def load_config():
+    path = _get_config_path()
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def _build_db_uri(cfg):
+    """从拆分配置构建 SQLAlchemy 数据库连接 URI。"""
+    return (
+        f"mysql+pymysql://{cfg['db_user']}:{cfg['db_password']}"
+        f"@{cfg['db_host']}:{cfg['db_port']}/{cfg['db_name']}"
+    )
+
+def create_app(config_input=None):
+    cfg = load_config()
+    mode = config_input if config_input else 'production'
+    mode_cfg = cfg.get(mode, cfg.get('production', {}))
 
     app = Flask(__name__)
-    app.config.from_object(config_obj)
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['SQLALCHEMY_DATABASE_URI'] = _build_db_uri(cfg)
+    app.config['DEBUG'] = mode_cfg.get('debug', False)
+    if not app.config['DEBUG']:
+        app.config['LOG_LEVEL'] = mode_cfg.get('log_level', 'INFO')
+        app.config['SQLALCHEMY_ENGINE_OPTIONS'] = mode_cfg.get(
+            'sqlalchemy_engine_options', {}
+        )
 
     # 日志配置
     if not app.debug:
@@ -27,9 +53,17 @@ def create_app(config_input=None):
     db.init_app(app)
     app.register_blueprint(fact_bp)
 
-    @app.route('/')
-    def index():
-        return jsonify({"message": "Flask project with DB entities created successfully!"})
+    @app.route('/', methods=['GET'])
+    def health():
+        """测试数据库连接。"""
+        try:
+            db.session.execute(db.text('SELECT 1'))
+            return jsonify({"status": "ok", "message": "Database connection successful"})
+        except Exception as e:
+            return jsonify({
+                "status": "error",
+                "message": "Database connection failed",
+            }), 500
 
     @app.route('/solve/start', methods=['POST'])
     def schedule():
@@ -73,8 +107,7 @@ def create_app(config_input=None):
 
 if __name__ == '__main__':
     try:
-        config_name = os.environ.get('FLASK_CONFIG', 'production')
-        app = create_app(config_name)
+        app = create_app('production')
         is_debug = app.config.get('DEBUG', False)
         app.run(debug=is_debug, host='0.0.0.0', port=8080)
     except Exception as e:

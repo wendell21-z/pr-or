@@ -36,7 +36,7 @@ jobs:
           --onefile
           --name "pr-or${{ matrix.arch }}"
           --console
-          --add-data "config.py;."
+          --add-data "app_config.json;."
           --hidden-import ortools
           --hidden-import ortools.sat
           --hidden-import ortools.sat.python

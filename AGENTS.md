@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
+This file provides guidance to AI coding agents when working with this repository.
 
 ## Project Overview
 
@@ -15,34 +15,37 @@ models.py           # SQLAlchemy ORM models: Car, Die, Part, Task, Day, etc.
 scheduler.py        # ProductionScheduler — fetches data, builds CP-SAT model, solves
 fact_api.py         # REST API blueprint (/fact/*) for CRUD on all domain entities
 utils.py            # ensure_day(), ensure_default_working_time() helpers
-requirements.txt    # Dependencies: flask, sqlalchemy, pymysql
-frontend/           # Vue 3 + Vite + TypeScript + Element Plus UI
-tests/              # pytest directory (currently test_partinventory_query.py)
+requirements.txt    # Dependencies: flask, sqlalchemy, pymysql, ortools
+.github/workflows/  # CI: build-exe.yml (PyInstaller Windows EXE)
+frontend/           # Vue 3 + Vite + TypeScript + Element Plus UI (separate workspace)
 ```
 
 ## Key Architecture Concepts
 
 ### Scheduler Pipeline (`scheduler.py`)
+
 `ProductionScheduler(line_id, start_date, days_count=7)` is the core solver:
+
 1. **fetch_data()** — queries DB for dies on the line, parts, consumption (via CarUsage joins), initial inventory, dunnage data, pinned tasks; auto-creates missing Day rows.
-2. **solve()** — builds a CP-SAT model with boolean `produce_vars`, integer `qty_vars`, `stock_vars` per (die, day); constraints: daily time limit (min 120 min per active die), stock balance (`prev_stock + qty - consumption`), dunnage capacity caps, pinned task enforcement; objective maximizes total fill rate. Returns list of `[{date, tasks: [{die_id, die_name, quantity, duration_minutes, dunnage}]}]`.
+2. **solve()** — builds a CP-SAT model with boolean `produce_vars`, integer `qty_vars`, `stock_vars` per (die, day); constraints: daily time limit (min 120 min per active die), stock balance (`prev_stock + qty - consumption`), dunnage capacity caps, pinned task enforcement, **min-stock soft constraints** (penalty-based); objective maximizes weighted production time minus inventory penalties. Returns list of `[{date, tasks: [{die_id, die_name, quantity, duration_minutes, dunnage}]}]`.
 
 ### REST API (`fact_api.py`)
+
 All CRUD for domain entities lives in the `fact` Blueprint at `/fact/*`:
+
 - **Entities**: `working-time`, `day`, `line`, `die`, `dunnage`, `part`, `car`, `part-car`, `car-usage`, `dunnage-inventory`, `part-inventory`
 - **Pattern**: each entity has upsert (`POST`), list (`GET`), delete (`DELETE`). Batch upsert for die, dunnage, day, car-usage, part-inventory, dunnage-inventory.
 - Serialization is via `_serialize(entity)` / `_serialize_all(items)`, with camelCase field names matching the Kotlin backend contract.
 
 ### ORM Models (`models.py`)
-All MySQL tables mapped as SQLAlchemy models. Key relationships:
-- `Die` ↔ `Part` (one-to-many via die_id)
-- `Car` ↔ `Part` (many-to-many via CarPart)
-- `DunnageInventoryHistory` composite PK on (dunnage_id, day_id)
-- `PartInventory` composite PK on (part_id, day_id)
+
+- Uses Flask-SQLAlchemy with MySQL (`pymysql` driver).
+- Key tables: `die` (stamping die with `akz` rate), `part` (with `min` stock threshold), `task` (pinned schedules), `day` (production day with working time), `car_usage` (daily car count demand).
 
 ## Development Commands
 
 ### Backend
+
 ```bash
 # Run the Flask app (default: port 8080)
 python app.py
@@ -56,6 +59,7 @@ pip install -r requirements.txt
 ```
 
 ### Frontend
+
 ```bash
 cd frontend
 npm run dev        # Vite dev server
@@ -65,9 +69,25 @@ npm run build-check  # vue-tsc + build
 ```
 
 ### Tests
+
 ```bash
 pytest tests/ -v
 pytest tests/test_partinventory_query.py -v -s   # single test with output
+```
+
+### Build EXE (Windows)
+
+```bash
+# Via GitHub Actions (push to main)
+# Or manually:
+pip install pyinstaller
+pip install -r requirements.txt
+python -m PyInstaller --onefile --name "pr-or-amd64" --console \
+  --add-data "config.py;." \
+  --hidden-import ortools --hidden-import ortools.sat \
+  --hidden-import ortools.sat.python --hidden-import ortools.sat.python.cp_model \
+  --collect-all ortools --collect-submodules ortools --collect-binaries ortools \
+  app.py
 ```
 
 ## Important Conventions & Gotchas
@@ -78,3 +98,5 @@ pytest tests/test_partinventory_query.py -v -s   # single test with output
 - **Dunnage capacity constraint**: `sum(stock_vars[related_parts]) <= empty_dunnages * capacity + initial_stock`. Stock cannot exceed dunnage physical limits.
 - **Consumption calculation**: `Sum(car_usage.car_id == CarPart.car_id * CarPart.usage)` grouped by day and part.
 - **`_sanity_checks()`** in scheduler prints debug info (capacity, stock, consumption mismatches). Run with `FLASK_CONFIG=development` for detailed traces on errors.
+- **Part.min**: if > 0, a soft penalty constraint encourages stock ≥ min; if 0 or null, a penalty encourages stock ≥ 0 (no deficit). Both are soft (penalty-based) to avoid infeasibility.
+- **PyInstaller packaging**: always use `--collect-all ortools --collect-submodules ortools --collect-binaries ortools` to bundle OR-Tools binaries.
