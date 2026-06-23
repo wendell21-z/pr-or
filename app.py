@@ -71,6 +71,15 @@ def create_app(config_input=None):
 
     return app
 
+def _keep_window():
+    """在异常退出时保持命令行窗口打开，显示错误信息。"""
+    print("\nPress Enter to exit...")
+    try:
+        input()
+    except Exception:
+        pass
+
+
 if __name__ == '__main__':
     config_name = os.environ.get('FLASK_CONFIG', 'production')
     app = create_app(config_name)
@@ -79,7 +88,6 @@ if __name__ == '__main__':
         app.run(debug=is_debug, host='0.0.0.0', port=8080)
     except Exception as e:
         import traceback
-        print(f"ERROR: {e}")
+        print(f"\nERROR: {e}")
         print(traceback.format_exc())
-        print("\nPress Enter to exit...")
-        input()
+        _keep_window()
